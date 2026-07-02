@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+drone_tour*.kml
+
+webapp/node_modules/
+webapp/dist/
+webapp/.env
+webapp/.env.local

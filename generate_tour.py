@@ -123,6 +123,28 @@ def densify_path(points, step_m=5.0):
     return dense
 
 
+def total_path_length(segments):
+    total = 0.0
+    for seg in segments:
+        for i in range(len(seg) - 1):
+            lat1, lon1, _ = seg[i]
+            lat2, lon2, _ = seg[i + 1]
+            total += distance(lat1, lon1, lat2, lon2)
+    return total
+
+
+# Google Earth Pro chokes on tours with too many gx:FlyTo waypoints (huge
+# file size, multi-hour playback). Scale the interpolation step to the
+# total flight path length so any input caps out around this many points.
+MAX_TOTAL_POINTS = 5000
+MIN_STEP_M = 5.0
+
+
+def choose_step_m(segments):
+    length = total_path_length(segments)
+    return max(MIN_STEP_M, length / MAX_TOTAL_POINTS)
+
+
 # =========================
 # SMOOTH HEADING (KEY UPGRADE)
 # =========================
@@ -139,9 +161,14 @@ def compute_headings(points):
 
 
 def smooth(values, alpha=0.25):
+    # Headings wrap at 360 degrees, so a plain lerp swings the long way
+    # around through 180 whenever a turn crosses due north (e.g. 359 -> 1).
+    # Blend across the shorter arc instead.
     out = [values[0]]
     for i in range(1, len(values)):
-        out.append(alpha * values[i] + (1 - alpha) * out[i - 1])
+        prev = out[i - 1]
+        diff = ((values[i] - prev + 540) % 360) - 180
+        out.append((prev + alpha * diff) % 360)
     return out
 
 
@@ -163,16 +190,22 @@ def build_tour(points, headings, output_file):
     tilt = 85
     range_ = 18
 
+    # gx:FlyTo defaults to flyToMode "bounce", which decelerates to a stop
+    # and re-accelerates at every single waypoint. With thousands of
+    # closely-spaced waypoints that reads as robotic/jumpy motion instead
+    # of a continuous glide, so force "smooth" and speed the base pace up.
+    base_duration = 0.12
+    speed_multiplier = 1.75
+    duration = base_duration / speed_multiplier
+
     for i in range(len(points)):
         lat, lon, alt = points[i]
         heading = headings[i]
 
-        # dynamic speed control (smooth motion)
-        duration = 0.12
-
         flyto = etree.SubElement(playlist, "{%s}FlyTo" % gx)
 
         etree.SubElement(flyto, "{%s}duration" % gx).text = str(duration)
+        etree.SubElement(flyto, "{%s}flyToMode" % gx).text = "smooth"
 
         lookat = etree.SubElement(flyto, "LookAt")
 
@@ -198,12 +231,15 @@ def build_tour(points, headings, output_file):
 # =========================
 if __name__ == "__main__":
     input_file = "input.kmz"
-    output_file = "drone_tour2.kml"
+    output_file = "drone_tour1.kml"
 
     kml_path = extract_kml_from_kmz(input_file)
     
 
     segments = extract_all_linestring_coords(kml_path)
+
+    step_m = choose_step_m(segments)
+    print(f"Using step size: {step_m:.1f} m")
 
     dense_points = []
     dense_headings = []
@@ -213,7 +249,7 @@ if __name__ == "__main__":
         if len(seg) < 2:
             continue
 
-        d = densify_path(seg, step_m=5.0)
+        d = densify_path(seg, step_m=step_m)
 
         h = compute_headings(d)
         h = smooth(h, alpha=0.25)
